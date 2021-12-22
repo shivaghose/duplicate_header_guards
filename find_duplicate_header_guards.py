@@ -3,7 +3,6 @@
 import os
 from pathlib import Path
 from typing import List, Set
-import sys
 
 
 def is_header(file_name: str) -> bool:
