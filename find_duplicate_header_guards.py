@@ -1,5 +1,14 @@
 #!/usr/bin/env python3
+"""
 
+Attempts to find C/C++ headers that are not properly guarded against duplication.
+
+Checks files to make sure either `#pragma once` has been used or unique header
+guards have been used. This isn't guaranteed to be complete, as define guards
+can be used for a variety of purposes (not just as header guards).
+"""
+
+import argparse
 import os
 import re
 import sys
@@ -55,13 +64,16 @@ class HeaderGuardStatus:
 def get_header_guard_status(data: str) -> Optional[HeaderGuardStatus]:
     # https://regex101.com/r/KKcUWF/2
     re_header_guard_name = re.compile(r"#ifndef (\w+)\s?.*\n#define")
-    header_guard_tag = re.search(re_header_guard_name, data)
-    if not header_guard_tag:
+    header_guard_tag_result = re.search(re_header_guard_name, data)
+    if not header_guard_tag_result:
         return None
-    header_guard_tag = header_guard_tag.group(1)
+    header_guard_tag = header_guard_tag_result.group(1)
+    re_define = re.compile(f"#ifndef {header_guard_tag}\\s?.*\\n#define (\\w+)")
+    define_tag_result = re.search(re_define, data)
+    define_tag = define_tag_result.group(1) if define_tag_result else ""
     return HeaderGuardStatus(
-        header_guard_tag,  # ifndef_name
-        header_guard_tag,  # def_name
+        ifndef_name=header_guard_tag,
+        def_name=define_tag,
     )
 
 
@@ -85,22 +97,22 @@ def check_header(file_path: str) -> HeaderStatus:
 
     if uses_pragma_once(data):
         return HeaderStatus(
-            file_path,  # file_path
-            None,  # header_guard_status
-            True,  # uses_pragma_once
+            file_path=file_path,
+            header_guard_status=None,
+            uses_pragma_once=True,
         )
     status = get_header_guard_status(data)
     if status:
         return HeaderStatus(
-            file_path,  # file_path
-            status,  # header_guard_status
-            False,  # uses_pragma_once
+            file_path=file_path,
+            header_guard_status=status,
+            uses_pragma_once=False,
         )
 
     return HeaderStatus(
-        file_path,  # file_path
-        None,  # header_guard_status
-        False,  # uses_pragma_once
+        file_path=file_path,
+        header_guard_status=None,
+        uses_pragma_once=False,
     )
 
 
@@ -121,9 +133,27 @@ def map_guard_tag_to_filepaths(statuses: List[HeaderStatus]) -> Dict[str, List[s
     return ret
 
 
-def main():
+def duplicated_header_guards_exist(header_statuses: List[HeaderStatus]) -> bool:
+    guard_tags_to_filepaths = map_guard_tag_to_filepaths(header_statuses)
+
+    repeated_tags = [
+        (tag, paths) for tag, paths in guard_tags_to_filepaths.items() if len(paths) > 1
+    ]
+
+    print(f"Number of files using header guards: {len(header_statuses)}")
+    print(f"Number of unique header guards: {len(guard_tags_to_filepaths)}")
+    print(f"Number of header guards that have been resued: {len(repeated_tags)}")
+
+    for tag, files in repeated_tags:
+        print(f"TAG: {tag}")
+        for file in files:
+            print(f"\t{file}")
+    return len(repeated_tags) > 0
+
+
+def process_dir(root: str) -> Optional[str]:
     ignore_dirs = dirs_to_ignore()
-    sub_dirs = get_sub_dirs_to_search(os.getcwd(), ignore_dirs)
+    sub_dirs = get_sub_dirs_to_search(root, ignore_dirs)
     headers: List[str] = []
     for dir in sub_dirs:
         headers.extend(find_header_files(dir))
@@ -143,27 +173,38 @@ def main():
     print(
         f"Number of header files without protection: {len(no_header_duplication_protection)}"
     )
-
     for status in no_header_duplication_protection:
         print(f"\t{status.file_path}")
+    no_header_protection_found = len(no_header_duplication_protection) > 0
 
     include_guards = [s for s in header_statuses if s.header_guard_status]
 
-    guard_tags_to_filepaths = map_guard_tag_to_filepaths(include_guards)
+    duplicated_headers_found = duplicated_header_guards_exist(include_guards)
 
-    repeated_tags = [
-        (tag, paths) for tag, paths in guard_tags_to_filepaths.items() if len(paths) > 1
-    ]
+    if no_header_protection_found or duplicated_headers_found:
+        return "Errors found"
+    else:
+        return None
 
-    print(f"Number of files using header guards: {len(include_guards)}")
-    print(f"Number of unique header guards: {len(guard_tags_to_filepaths)}")
-    print(f"Number of header guards that have been resued: {len(repeated_tags)}")
 
-    for tag, files in repeated_tags:
-        print(f"TAG: {tag}")
-        for file in files:
-            print(f"\t{file}")
+def process_file(file_path: str) -> Optional[str]:
+    status = check_header(file_path)
+    if not status.uses_pragma_once and not status.header_guard_status:
+        return f"{status.file_path} does not have any header duplication protection."
+    if status.uses_pragma_once:
+        print(f"{status.file_path} uses `pragma once`")
+        return None
+    if status.header_guard_status:
+        error = status.header_guard_status.get_error()
+        if error:
+            return f"{status.file_path} error with header guards: {error}"
+        else:
+            print(f"{status.file_path} uses header guards.")
+            return None
+    else:
+        raise RuntimeError("Should not get here")
 
 
 if __name__ == "__main__":
-    main()
+    errors_found = process_dir(os.getcwd())
+    sys.exit(1 if errors_found else 0)
