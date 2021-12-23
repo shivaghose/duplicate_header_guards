@@ -2,11 +2,10 @@
 
 import os
 import re
-import mmap
+import sys
 from dataclasses import dataclass
 from pathlib import Path
-import sys
-from typing import Any, List, Optional, Set, Union
+from typing import Dict, List, Optional, Set
 
 
 def is_header(file_name: str) -> bool:
@@ -81,8 +80,7 @@ class HeaderStatus:
 
 
 def check_header(file_path: str) -> HeaderStatus:
-    print(f"Processing {file_path}")
-    with open(file_path, "r+", errors="ignore") as file:
+    with open(file_path, "r", errors="ignore") as file:
         data = file.read()
 
     if uses_pragma_once(data):
@@ -104,6 +102,23 @@ def check_header(file_path: str) -> HeaderStatus:
         None,  # header_guard_status
         False,  # uses_pragma_once
     )
+
+
+def map_guard_tag_to_filepaths(statuses: List[HeaderStatus]) -> Dict[str, List[str]]:
+    ret: Dict[str, List[str]] = {}
+
+    for status in statuses:
+        if not status.header_guard_status:
+            raise ValueError(f"{status} does not have a header_guard_status")
+        if not status.header_guard_status.ifndef_name:
+            raise ValueError(f"{status} does not have a ifndef tag")
+        tag = status.header_guard_status.ifndef_name
+        if tag not in ret:
+            ret[tag] = []
+
+        ret[tag].append(status.file_path)
+
+    return ret
 
 
 def main():
@@ -128,8 +143,26 @@ def main():
     print(
         f"Number of header files without protection: {len(no_header_duplication_protection)}"
     )
+
     for status in no_header_duplication_protection:
-        print(f"{status.file_path}")
+        print(f"\t{status.file_path}")
+
+    include_guards = [s for s in header_statuses if s.header_guard_status]
+
+    guard_tags_to_filepaths = map_guard_tag_to_filepaths(include_guards)
+
+    repeated_tags = [
+        (tag, paths) for tag, paths in guard_tags_to_filepaths.items() if len(paths) > 1
+    ]
+
+    print(f"Number of files using header guards: {len(include_guards)}")
+    print(f"Number of unique header guards: {len(guard_tags_to_filepaths)}")
+    print(f"Number of header guards that have been resued: {len(repeated_tags)}")
+
+    for tag, files in repeated_tags:
+        print(f"TAG: {tag}")
+        for file in files:
+            print(f"\t{file}")
 
 
 if __name__ == "__main__":
