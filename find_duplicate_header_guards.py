@@ -14,7 +14,7 @@ import re
 import sys
 from dataclasses import dataclass
 from pathlib import Path
-from typing import Dict, List, Optional, Set
+from typing import Dict, List, Optional, Set, Tuple
 
 
 def is_header(file_name: str) -> bool:
@@ -133,25 +133,48 @@ def map_guard_tag_to_filepaths(statuses: List[HeaderStatus]) -> Dict[str, List[s
     return ret
 
 
-def duplicated_header_guards_exist(header_statuses: List[HeaderStatus]) -> bool:
-    guard_tags_to_filepaths = map_guard_tag_to_filepaths(header_statuses)
+TagToFilePaths = Tuple[str, List[str]]
 
-    repeated_tags = [
+
+@dataclass
+class DuplicateHeadersReport:
+    number_of_unique_tags: int = 0
+    duplicated_tags_info: List[TagToFilePaths] = []
+
+
+def find_duplicate_header_guards(
+    header_statuses: List[HeaderStatus],
+) -> DuplicateHeadersReport:
+    ret = DuplicateHeadersReport()
+    guard_tags_to_filepaths = map_guard_tag_to_filepaths(header_statuses)
+    ret.number_of_unique_tags = len(guard_tags_to_filepaths)
+    ret.duplicated_tags_info = [
         (tag, paths) for tag, paths in guard_tags_to_filepaths.items() if len(paths) > 1
     ]
+    return ret
 
-    print(f"Number of files using header guards: {len(header_statuses)}")
-    print(f"Number of unique header guards: {len(guard_tags_to_filepaths)}")
-    print(f"Number of header guards that have been resued: {len(repeated_tags)}")
 
-    for tag, files in repeated_tags:
+def parse_duplicate_headers_report(report: DuplicateHeadersReport) -> None:
+    print(f"Number of unique header guards: {report.number_of_unique_tags}")
+    print(
+        f"Number of header guards that have been reused: {len(report.duplicated_tags_info)}"
+    )
+
+    for tag, files in report.duplicated_tags_info:
         print(f"TAG: {tag}")
         for file in files:
             print(f"\t{file}")
-    return len(repeated_tags) > 0
 
 
 def process_dir(root: str) -> Optional[str]:
+    """
+    Inspect all the headers in the provided dir and its subfolders.
+
+    This method checks to see if every "header-like" file (see `is_header`) has
+    some form of de-duplication protection and further attempts to find other
+    possibly duplicated header guards in the provided directory and
+    sub-directory structure.
+    """
     ignore_dirs = dirs_to_ignore()
     sub_dirs = get_sub_dirs_to_search(root, ignore_dirs)
     headers: List[str] = []
@@ -179,7 +202,9 @@ def process_dir(root: str) -> Optional[str]:
 
     include_guards = [s for s in header_statuses if s.header_guard_status]
 
-    duplicated_headers_found = duplicated_header_guards_exist(include_guards)
+    header_guards_report = find_duplicate_header_guards(include_guards)
+    duplicated_headers_found = len(header_guards_report.duplicated_tags_info) > 0
+    parse_duplicate_headers_report(header_guards_report)
 
     if no_header_protection_found or duplicated_headers_found:
         return "Errors found"
@@ -188,6 +213,13 @@ def process_dir(root: str) -> Optional[str]:
 
 
 def process_file(file_path: str) -> Optional[str]:
+    """
+    Inspect a single header file.
+
+    Reviews a single file to see if it has some sort of de-duplication
+    protection. This method only looks at a single file and therefor cannot
+    tell the user if include guards have been repeated somewhere else.
+    """
     status = check_header(file_path)
     if not status.uses_pragma_once and not status.header_guard_status:
         return f"{status.file_path} does not have any header duplication protection."
